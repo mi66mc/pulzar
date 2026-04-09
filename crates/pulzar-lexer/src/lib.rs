@@ -272,6 +272,7 @@ impl<'a> Lexer<'a> {
         let kind = match &self.source[start..self.offset] {
             "let" => TokenKind::Let,
             "fn" => TokenKind::Fn,
+            "return" => TokenKind::Return,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             _ => TokenKind::Identifier,
@@ -375,8 +376,10 @@ mod tests {
 
     #[test]
     fn lexes_fn_list_object_and_types() {
-        let kinds = kinds("fn isAdult(u) { [1, 2]; map p => { name: p.name, age: number } }");
+        let kinds =
+            kinds("fn isAdult(u) { [1, 2]; map p => { return { name: p.name, age: number } } }");
         assert!(kinds.contains(&TokenKind::Fn));
+        assert!(kinds.contains(&TokenKind::Return));
         assert!(kinds.contains(&TokenKind::LeftBracket));
         assert!(kinds.contains(&TokenKind::LeftBrace));
         assert!(kinds.contains(&TokenKind::Colon));

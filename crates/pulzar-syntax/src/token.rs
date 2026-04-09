@@ -10,6 +10,7 @@ pub enum TokenKind {
     StatementEnd,
     Let,
     Fn,
+    Return,
     True,
     False,
     LeftParen,
