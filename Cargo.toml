@@ -1,6 +1,16 @@
-[package]
-name = "pulzar"
+[workspace]
+members = [
+    "crates/pulzar-cli",
+    "crates/pulzar-syntax",
+    "crates/pulzar-lexer",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
-[dependencies]
+[workspace.dependencies]
+pulzar-syntax = { path = "crates/pulzar-syntax" }
+pulzar-lexer = { path = "crates/pulzar-lexer" }

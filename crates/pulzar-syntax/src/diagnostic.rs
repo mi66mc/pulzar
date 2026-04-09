@@ -1,0 +1,25 @@
+use crate::source::Span;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiagnosticKind {
+    UnexpectedCharacter,
+    UnterminatedString,
+    InvalidNumber,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub kind: DiagnosticKind,
+    pub span: Span,
+    pub message: String,
+}
+
+impl Diagnostic {
+    pub fn new(kind: DiagnosticKind, span: Span, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            span,
+            message: message.into(),
+        }
+    }
+}
