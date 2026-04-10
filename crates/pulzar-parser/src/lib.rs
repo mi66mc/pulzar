@@ -176,11 +176,11 @@ impl<'a> Parser<'a> {
 
         if self.match_kind(TokenKind::Assign) {
             let rhs = self.parse_expression();
-            if !matches!(expr.kind, ExprKind::Identifier(_)) {
+            if !matches!(expr.kind, ExprKind::Variable(_)) {
                 self.diagnostics.push(Diagnostic::new(
                     DiagnosticKind::InvalidAssignmentTarget,
                     expr.span,
-                    "invalid assignment target",
+                    "invalid assignment target; use `$name = ...`",
                 ));
             }
 
@@ -316,6 +316,42 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_atom();
 
         loop {
+            if self.match_kind(TokenKind::Dot) {
+                if self.at(TokenKind::Identifier) {
+                    let field = self.current_text().to_string();
+                    let field_span = self.current_span();
+                    self.bump();
+                    let span = expr.span.cover(field_span);
+                    expr = match expr {
+                        Expr {
+                            kind: ExprKind::Member { object, mut fields },
+                            ..
+                        } => {
+                            fields.push(field);
+                            Expr {
+                                kind: ExprKind::Member { object, fields },
+                                span,
+                            }
+                        }
+                        other => Expr {
+                            kind: ExprKind::Member {
+                                object: Box::new(other),
+                                fields: vec![field],
+                            },
+                            span,
+                        },
+                    };
+                    continue;
+                }
+
+                self.diagnostics.push(Diagnostic::new(
+                    DiagnosticKind::UnexpectedToken,
+                    self.current_span(),
+                    "expected field name after `.`",
+                ));
+                break;
+            }
+
             if self.at(TokenKind::LeftParen) {
                 let args = self.parse_call_args();
                 expr = Self::push_call_args(expr, args);
@@ -338,25 +374,26 @@ impl<'a> Parser<'a> {
         self.skip_statement_ends();
         let start = self.current_span();
         match self.current_kind() {
-            TokenKind::Identifier => self.parse_identifier_or_path(),
+            TokenKind::Identifier => self.parse_bareword(),
+            TokenKind::Dollar => self.parse_variable(),
             TokenKind::Integer => {
-                let text = self.current_text().to_string();
+                let value = self.parse_integer_literal(start);
                 self.bump();
                 Expr {
-                    kind: ExprKind::Integer(text),
+                    kind: ExprKind::Integer(value),
                     span: start,
                 }
             }
             TokenKind::Float => {
-                let text = self.current_text().to_string();
+                let value = self.parse_float_literal(start);
                 self.bump();
                 Expr {
-                    kind: ExprKind::Float(text),
+                    kind: ExprKind::Float(value),
                     span: start,
                 }
             }
             TokenKind::String => {
-                let text = self.current_text().to_string();
+                let text = self.parse_string_literal(start);
                 self.bump();
                 Expr {
                     kind: ExprKind::String(text),
@@ -379,7 +416,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LeftParen => self.parse_grouped(),
             TokenKind::LeftBracket => self.parse_list(),
-            TokenKind::At => self.parse_at_expr(),
+            TokenKind::At => self.parse_object_expr(),
             _ => {
                 self.diagnostics.push(Diagnostic::new(
                     DiagnosticKind::ExpectedExpression,
@@ -392,25 +429,31 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_identifier_or_path(&mut self) -> Expr {
+    fn parse_bareword(&mut self) -> Expr {
         let start = self.current_span();
-        let mut segments = vec![self.current_text().to_string()];
+        let mut text = self.current_text().to_string();
         self.bump();
 
         while self.at(TokenKind::Dot) && self.peek_kind(1) == TokenKind::Identifier {
             self.bump();
-            segments.push(self.current_text().to_string());
+            text.push('.');
+            text.push_str(self.current_text());
             self.bump();
         }
 
-        let span = start.cover(self.prev_span());
-        let kind = if segments.len() == 1 {
-            ExprKind::Identifier(segments.remove(0))
-        } else {
-            ExprKind::Path(segments)
-        };
+        Expr {
+            kind: ExprKind::Bareword(text),
+            span: start.cover(self.prev_span()),
+        }
+    }
 
-        Expr { kind, span }
+    fn parse_variable(&mut self) -> Expr {
+        let start = self.expect(TokenKind::Dollar, "expected `$`");
+        let (name, end) = self.expect_identifier("expected identifier after `$`");
+        Expr {
+            kind: ExprKind::Variable(name),
+            span: start.cover(end),
+        }
     }
 
     fn parse_grouped(&mut self) -> Expr {
@@ -452,108 +495,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_at_expr(&mut self) -> Expr {
+    fn parse_object_expr(&mut self) -> Expr {
         let start = self.expect(TokenKind::At, "expected `@`");
         if self.at(TokenKind::LeftBrace) {
-            return self.parse_object_literal(start);
-        }
-
-        let object = self.parse_atom_without_path_chain();
-        let mut fields = Vec::new();
-
-        while self.match_kind(TokenKind::Dot) {
-            if self.at(TokenKind::Identifier) {
-                fields.push(self.current_text().to_string());
-                self.bump();
-            } else {
-                self.diagnostics.push(Diagnostic::new(
-                    DiagnosticKind::UnexpectedToken,
-                    self.current_span(),
-                    "expected field name after `.`",
-                ));
-                break;
-            }
-        }
-
-        if fields.is_empty() {
+            self.parse_object_literal(start)
+        } else {
             self.diagnostics.push(Diagnostic::new(
                 DiagnosticKind::ExpectedExpression,
                 start,
-                "expected member chain after `@`",
+                "expected `{` after `@`",
             ));
-        }
-
-        Expr {
-            kind: ExprKind::Member {
-                object: Box::new(object),
-                fields,
-            },
-            span: start.cover(self.prev_span()),
-        }
-    }
-
-    fn parse_atom_without_path_chain(&mut self) -> Expr {
-        self.skip_statement_ends();
-        let start = self.current_span();
-        match self.current_kind() {
-            TokenKind::Identifier => {
-                let name = self.current_text().to_string();
-                self.bump();
-                Expr {
-                    kind: ExprKind::Identifier(name),
-                    span: start,
-                }
-            }
-            TokenKind::LeftParen => self.parse_grouped(),
-            TokenKind::Integer => {
-                let text = self.current_text().to_string();
-                self.bump();
-                Expr {
-                    kind: ExprKind::Integer(text),
-                    span: start,
-                }
-            }
-            TokenKind::Float => {
-                let text = self.current_text().to_string();
-                self.bump();
-                Expr {
-                    kind: ExprKind::Float(text),
-                    span: start,
-                }
-            }
-            TokenKind::String => {
-                let text = self.current_text().to_string();
-                self.bump();
-                Expr {
-                    kind: ExprKind::String(text),
-                    span: start,
-                }
-            }
-            TokenKind::True => {
-                self.bump();
-                Expr {
-                    kind: ExprKind::Bool(true),
-                    span: start,
-                }
-            }
-            TokenKind::False => {
-                self.bump();
-                Expr {
-                    kind: ExprKind::Bool(false),
-                    span: start,
-                }
-            }
-            TokenKind::LeftBracket => self.parse_list(),
-            TokenKind::At => self.parse_at_expr(),
-            _ => {
-                self.diagnostics.push(Diagnostic::new(
-                    DiagnosticKind::ExpectedExpression,
-                    start,
-                    "expected expression after `@`",
-                ));
-                self.bump();
-                self.error_expr(start)
-            }
+            self.error_expr(start)
         }
     }
 
@@ -637,7 +589,32 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_application_arg(&mut self) -> Expr {
-        self.parse_lambda(false)
+        if self.is_lambda_start() {
+            return self.parse_lambda(false);
+        }
+        if self.is_shell_flag_start() {
+            return self.parse_shell_flag_arg();
+        }
+        self.parse_postfix(false)
+    }
+
+    fn parse_shell_flag_arg(&mut self) -> Expr {
+        let start = self.current_span();
+        let mut text = String::new();
+        let mut last_end = start.start();
+
+        while self.is_shell_flag_part(self.current_kind())
+            && self.current_span().start() == last_end
+        {
+            text.push_str(self.current_text());
+            last_end = self.current_span().end();
+            self.bump();
+        }
+
+        Expr {
+            kind: ExprKind::Bareword(text),
+            span: start.cover(self.prev_span()),
+        }
     }
 
     fn parse_parenthesized_params(&mut self) -> Vec<Param> {
@@ -726,7 +703,9 @@ impl<'a> Parser<'a> {
                 | TokenKind::LeftParen
                 | TokenKind::LeftBracket
                 | TokenKind::At
+                | TokenKind::Dollar
         ) && !self.at(TokenKind::StatementEnd)
+            || self.is_shell_flag_start()
     }
 
     fn is_statement_terminator(&self) -> bool {
@@ -761,6 +740,25 @@ impl<'a> Parser<'a> {
         };
 
         Some(item)
+    }
+
+    fn is_shell_flag_start(&self) -> bool {
+        self.at(TokenKind::Minus)
+            && matches!(
+                self.peek_kind(1),
+                TokenKind::Minus | TokenKind::Identifier | TokenKind::Integer
+            )
+    }
+
+    fn is_shell_flag_part(&self, kind: TokenKind) -> bool {
+        matches!(
+            kind,
+            TokenKind::Minus
+                | TokenKind::Identifier
+                | TokenKind::Integer
+                | TokenKind::Dot
+                | TokenKind::Assign
+        )
     }
 
     fn push_call_args(callee: Expr, mut args: Vec<Expr>) -> Expr {
@@ -894,6 +892,81 @@ impl<'a> Parser<'a> {
             span,
         }
     }
+
+    fn parse_integer_literal(&mut self, span: Span) -> i64 {
+        self.current_text().parse::<i64>().unwrap_or_else(|_| {
+            self.diagnostics.push(Diagnostic::new(
+                DiagnosticKind::InvalidNumber,
+                span,
+                "invalid integer literal",
+            ));
+            0
+        })
+    }
+
+    fn parse_float_literal(&mut self, span: Span) -> f64 {
+        self.current_text().parse::<f64>().unwrap_or_else(|_| {
+            self.diagnostics.push(Diagnostic::new(
+                DiagnosticKind::InvalidNumber,
+                span,
+                "invalid float literal",
+            ));
+            0.0
+        })
+    }
+
+    fn parse_string_literal(&mut self, span: Span) -> String {
+        let raw = self.current_text();
+        cook_string_literal(raw).unwrap_or_else(|message| {
+            self.diagnostics.push(Diagnostic::new(
+                DiagnosticKind::UnexpectedToken,
+                span,
+                message,
+            ));
+            String::new()
+        })
+    }
+}
+
+fn cook_string_literal(raw: &str) -> Result<String, &'static str> {
+    let mut chars = raw.chars();
+    let Some(delimiter) = chars.next() else {
+        return Err("empty string literal");
+    };
+    let Some(last) = raw.chars().last() else {
+        return Err("empty string literal");
+    };
+
+    if (delimiter != '"' && delimiter != '\'') || last != delimiter || raw.len() < 2 {
+        return Err("invalid string literal");
+    }
+
+    let inner = &raw[delimiter.len_utf8()..raw.len() - delimiter.len_utf8()];
+    let mut out = String::new();
+    let mut chars = inner.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+
+        let Some(escaped) = chars.next() else {
+            return Err("unterminated escape sequence");
+        };
+
+        match escaped {
+            '\\' => out.push('\\'),
+            '"' => out.push('"'),
+            '\'' => out.push('\''),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            other => out.push(other),
+        }
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -914,7 +987,7 @@ mod tests {
 
     #[test]
     fn parses_lambda_with_return_block() {
-        let parsed = parse_expr("u => { return @u.age >= 18 }", SourceId(0));
+        let parsed = parse_expr("u => { return $u.age >= 18 }", SourceId(0));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         assert!(matches!(
             parsed.expr.expect("expr").kind,
@@ -924,7 +997,7 @@ mod tests {
 
     #[test]
     fn parses_function_expr_body() {
-        let parsed = parse_file("fn score(u) => @u.points * 2", SourceId(0));
+        let parsed = parse_file("fn score(u) => $u.points * 2", SourceId(0));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         assert!(matches!(
             parsed.file.statements[0].kind,
@@ -934,7 +1007,7 @@ mod tests {
 
     #[test]
     fn parses_member_chain_and_object_literal() {
-        let member = parse_expr("@user.profile.name", SourceId(0));
+        let member = parse_expr("$user.profile.name", SourceId(0));
         assert!(member.diagnostics.is_empty(), "{:?}", member.diagnostics);
         assert!(matches!(
             member.expr.expect("expr").kind,
@@ -950,6 +1023,23 @@ mod tests {
     }
 
     #[test]
+    fn cooks_string_and_numeric_literals() {
+        let string = parse_expr("'asijd uas'", SourceId(0));
+        assert!(string.diagnostics.is_empty(), "{:?}", string.diagnostics);
+        assert!(matches!(
+            string.expr.expect("expr").kind,
+            ExprKind::String(ref value) if value == "asijd uas"
+        ));
+
+        let number = parse_expr("42", SourceId(0));
+        assert!(number.diagnostics.is_empty(), "{:?}", number.diagnostics);
+        assert!(matches!(
+            number.expr.expect("expr").kind,
+            ExprKind::Integer(42)
+        ));
+    }
+
+    #[test]
     fn rejects_assignment_expression() {
         let parsed = parse_file("foo(x = 10)", SourceId(0));
         assert!(!parsed.diagnostics.is_empty());
@@ -959,6 +1049,35 @@ mod tests {
     fn diagnoses_invalid_assignment_target() {
         let parsed = parse_file("a + b = 1", SourceId(0));
         assert!(!parsed.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn parses_bareword_with_dots_as_string_like_atom() {
+        let parsed = parse_expr("users.json", SourceId(0));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        assert!(matches!(
+            parsed.expr.expect("expr").kind,
+            ExprKind::Bareword(ref value) if value == "users.json"
+        ));
+    }
+
+    #[test]
+    fn parses_shell_flags_as_bareword_args() {
+        let parsed = parse_expr("git status --short --color=never", SourceId(0));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let expr = parsed.expr.expect("expr");
+        match expr.kind {
+            ExprKind::Call { args, .. } => {
+                assert!(matches!(args[0].kind, ExprKind::Bareword(ref value) if value == "status"));
+                assert!(
+                    matches!(args[1].kind, ExprKind::Bareword(ref value) if value == "--short")
+                );
+                assert!(
+                    matches!(args[2].kind, ExprKind::Bareword(ref value) if value == "--color=never")
+                );
+            }
+            other => panic!("unexpected expression: {other:?}"),
+        }
     }
 
     #[test]

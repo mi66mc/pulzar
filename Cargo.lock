@@ -131,12 +131,26 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "pulzar-lexer",
+ "pulzar-output",
  "pulzar-parser",
+ "pulzar-runtime",
+ "pulzar-sema",
  "pulzar-syntax",
 ]
 
 [[package]]
+name = "pulzar-builtins"
+version = "0.1.0"
+
+[[package]]
 name = "pulzar-lexer"
+version = "0.1.0"
+dependencies = [
+ "pulzar-syntax",
+]
+
+[[package]]
+name = "pulzar-output"
 version = "0.1.0"
 dependencies = [
  "pulzar-syntax",
@@ -147,6 +161,24 @@ name = "pulzar-parser"
 version = "0.1.0"
 dependencies = [
  "pulzar-lexer",
+ "pulzar-syntax",
+]
+
+[[package]]
+name = "pulzar-runtime"
+version = "0.1.0"
+dependencies = [
+ "pulzar-builtins",
+ "pulzar-parser",
+ "pulzar-sema",
+ "pulzar-syntax",
+]
+
+[[package]]
+name = "pulzar-sema"
+version = "0.1.0"
+dependencies = [
+ "pulzar-parser",
  "pulzar-syntax",
 ]
 

@@ -1,0 +1,13 @@
+[package]
+name = "pulzar-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pulzar-builtins.workspace = true
+pulzar-syntax.workspace = true
+
+[dev-dependencies]
+pulzar-parser.workspace = true
+pulzar-sema.workspace = true

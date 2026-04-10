@@ -23,6 +23,7 @@ pub enum TokenKind {
     Colon,
     Dot,
     At,
+    Dollar,
     Plus,
     Minus,
     Star,

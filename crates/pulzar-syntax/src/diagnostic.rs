@@ -12,6 +12,10 @@ pub enum DiagnosticKind {
     MissingDelimiter,
     InvalidLambdaParameterList,
     UnexpectedStatementEnd,
+    AssignmentToUndeclaredName,
+    DuplicateBinding,
+    InvalidReturnContext,
+    RuntimeError,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

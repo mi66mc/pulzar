@@ -1,0 +1,9 @@
+[package]
+name = "pulzar-sema"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pulzar-syntax.workspace = true
+pulzar-parser.workspace = true

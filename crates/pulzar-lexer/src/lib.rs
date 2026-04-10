@@ -31,7 +31,7 @@ impl<'a> Lexer<'a> {
                 '\r' | '\n' => self.lex_statement_end(start),
                 '#' => self.lex_comment(start),
                 '/' if self.peek_next_char() == Some('/') => self.lex_comment(start),
-                '"' => self.lex_string(start),
+                '"' | '\'' => self.lex_string(start, ch),
                 '0'..='9' => self.lex_number(start),
                 'a'..='z' | 'A'..='Z' | '_' => self.lex_identifier(start),
                 '(' => self.bump_single(TokenKind::LeftParen),
@@ -44,6 +44,7 @@ impl<'a> Lexer<'a> {
                 ':' => self.bump_single(TokenKind::Colon),
                 '.' => self.bump_single(TokenKind::Dot),
                 '@' => self.bump_single(TokenKind::At),
+                '$' => self.bump_single(TokenKind::Dollar),
                 ';' => self.bump_single(TokenKind::StatementEnd),
                 '+' => self.bump_single(TokenKind::Plus),
                 '-' => self.bump_single(TokenKind::Minus),
@@ -186,13 +187,13 @@ impl<'a> Lexer<'a> {
         self.push_token(TokenKind::Comment, start, self.offset);
     }
 
-    fn lex_string(&mut self, start: usize) {
+    fn lex_string(&mut self, start: usize, delimiter: char) {
         self.bump_char();
         let mut terminated = false;
 
         while let Some(ch) = self.peek_char() {
             match ch {
-                '"' => {
+                ch if ch == delimiter => {
                     self.bump_char();
                     terminated = true;
                     break;
@@ -324,7 +325,7 @@ mod tests {
 
     #[test]
     fn lexes_simple_pipeline() {
-        let kinds = kinds("ps |> filter p => @p.cpu > 10");
+        let kinds = kinds("ps |> filter p => $p.cpu > 10");
         assert_eq!(
             kinds,
             vec![
@@ -333,7 +334,7 @@ mod tests {
                 TokenKind::Identifier,
                 TokenKind::Identifier,
                 TokenKind::FatArrow,
-                TokenKind::At,
+                TokenKind::Dollar,
                 TokenKind::Identifier,
                 TokenKind::Dot,
                 TokenKind::Identifier,
@@ -362,13 +363,13 @@ mod tests {
 
     #[test]
     fn distinguishes_integer_float_and_property_access() {
-        let kinds = kinds("1 2.5 @p.cpu");
+        let kinds = kinds("1 2.5 $p.cpu");
         assert_eq!(
             kinds,
             vec![
                 TokenKind::Integer,
                 TokenKind::Float,
-                TokenKind::At,
+                TokenKind::Dollar,
                 TokenKind::Identifier,
                 TokenKind::Dot,
                 TokenKind::Identifier,
@@ -421,6 +422,28 @@ mod tests {
             file.tokens.last().map(|token| token.kind),
             Some(TokenKind::Eof)
         );
+    }
+
+    #[test]
+    fn lexes_single_quoted_strings() {
+        let kinds = kinds("let x = 'oi'");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Let,
+                TokenKind::Identifier,
+                TokenKind::Assign,
+                TokenKind::String,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn recovers_from_unterminated_single_quoted_string() {
+        let file = lex("'hello", SourceId(0));
+        assert_eq!(file.diagnostics.len(), 1);
+        assert_eq!(file.diagnostics[0].kind, DiagnosticKind::UnterminatedString);
     }
 
     #[test]

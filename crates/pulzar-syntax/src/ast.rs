@@ -72,10 +72,10 @@ pub struct Expr {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
-    Identifier(String),
-    Path(Vec<String>),
-    Integer(String),
-    Float(String),
+    Bareword(String),
+    Variable(String),
+    Integer(i64),
+    Float(f64),
     String(String),
     Bool(bool),
     List(Vec<Expr>),
