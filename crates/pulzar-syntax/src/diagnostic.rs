@@ -5,6 +5,13 @@ pub enum DiagnosticKind {
     UnexpectedCharacter,
     UnterminatedString,
     InvalidNumber,
+    UnexpectedToken,
+    ExpectedExpression,
+    ExpectedStatement,
+    InvalidAssignmentTarget,
+    MissingDelimiter,
+    InvalidLambdaParameterList,
+    UnexpectedStatementEnd,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

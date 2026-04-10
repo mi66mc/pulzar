@@ -58,6 +58,15 @@ impl Span {
     pub const fn end(self) -> usize {
         self.range.end()
     }
+
+    pub fn cover(self, other: Span) -> Self {
+        debug_assert_eq!(self.source_id, other.source_id);
+        Self::new(
+            self.source_id,
+            self.start().min(other.start()),
+            self.end().max(other.end()),
+        )
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -22,7 +22,7 @@ pub enum TokenKind {
     Comma,
     Colon,
     Dot,
-    Semicolon,
+    At,
     Plus,
     Minus,
     Star,

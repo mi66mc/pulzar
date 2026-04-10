@@ -3,6 +3,7 @@ members = [
     "crates/pulzar-cli",
     "crates/pulzar-syntax",
     "crates/pulzar-lexer",
+    "crates/pulzar-parser",
 ]
 resolver = "2"
 
@@ -14,3 +15,4 @@ license = "MIT"
 [workspace.dependencies]
 pulzar-syntax = { path = "crates/pulzar-syntax" }
 pulzar-lexer = { path = "crates/pulzar-lexer" }
+pulzar-parser = { path = "crates/pulzar-parser" }

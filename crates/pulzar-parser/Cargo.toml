@@ -1,11 +1,9 @@
 [package]
-name = "pulzar"
+name = "pulzar-parser"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
 pulzar-lexer.workspace = true
-pulzar-parser.workspace = true
 pulzar-syntax.workspace = true

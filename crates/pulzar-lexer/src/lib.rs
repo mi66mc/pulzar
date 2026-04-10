@@ -43,6 +43,7 @@ impl<'a> Lexer<'a> {
                 ',' => self.bump_single(TokenKind::Comma),
                 ':' => self.bump_single(TokenKind::Colon),
                 '.' => self.bump_single(TokenKind::Dot),
+                '@' => self.bump_single(TokenKind::At),
                 ';' => self.bump_single(TokenKind::StatementEnd),
                 '+' => self.bump_single(TokenKind::Plus),
                 '-' => self.bump_single(TokenKind::Minus),
@@ -323,7 +324,7 @@ mod tests {
 
     #[test]
     fn lexes_simple_pipeline() {
-        let kinds = kinds("ps |> filter p => p.cpu > 10");
+        let kinds = kinds("ps |> filter p => @p.cpu > 10");
         assert_eq!(
             kinds,
             vec![
@@ -332,6 +333,7 @@ mod tests {
                 TokenKind::Identifier,
                 TokenKind::Identifier,
                 TokenKind::FatArrow,
+                TokenKind::At,
                 TokenKind::Identifier,
                 TokenKind::Dot,
                 TokenKind::Identifier,
@@ -360,12 +362,13 @@ mod tests {
 
     #[test]
     fn distinguishes_integer_float_and_property_access() {
-        let kinds = kinds("1 2.5 p.cpu");
+        let kinds = kinds("1 2.5 @p.cpu");
         assert_eq!(
             kinds,
             vec![
                 TokenKind::Integer,
                 TokenKind::Float,
+                TokenKind::At,
                 TokenKind::Identifier,
                 TokenKind::Dot,
                 TokenKind::Identifier,
@@ -377,9 +380,10 @@ mod tests {
     #[test]
     fn lexes_fn_list_object_and_types() {
         let kinds =
-            kinds("fn isAdult(u) { [1, 2]; map p => { return { name: p.name, age: number } } }");
+            kinds("fn isAdult(u) { [1, 2]; map p => { return @{ name: \"a\", age: 18 } } }");
         assert!(kinds.contains(&TokenKind::Fn));
         assert!(kinds.contains(&TokenKind::Return));
+        assert!(kinds.contains(&TokenKind::At));
         assert!(kinds.contains(&TokenKind::LeftBracket));
         assert!(kinds.contains(&TokenKind::LeftBrace));
         assert!(kinds.contains(&TokenKind::Colon));
