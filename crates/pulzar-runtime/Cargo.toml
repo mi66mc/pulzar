@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 pulzar-builtins.workspace = true
 pulzar-syntax.workspace = true
+ctrlc.workspace = true
 
 [dev-dependencies]
 pulzar-parser.workspace = true

@@ -24,3 +24,4 @@ pulzar-sema = { path = "crates/pulzar-sema" }
 pulzar-output = { path = "crates/pulzar-output" }
 pulzar-builtins = { path = "crates/pulzar-builtins" }
 pulzar-runtime = { path = "crates/pulzar-runtime" }
+ctrlc = "3.4.5"

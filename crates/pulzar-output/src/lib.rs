@@ -1,5 +1,6 @@
 use std::fmt::Debug;
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
+use std::path::Path;
 
 use pulzar_syntax::{Diagnostic, LineIndex, Token, TokenKind};
 
@@ -111,6 +112,12 @@ impl Reporter {
     pub fn print_shell_message(&self, message: &str) {
         let prefix = self.paint("pulzar", Color::Blue, true);
         println!("{prefix} {message}");
+    }
+
+    pub fn print_prompt(&self, cwd: &Path) -> io::Result<()> {
+        let prompt = self.paint(&format!("{} >", cwd.display()), Color::Blue, true);
+        print!("{prompt} ");
+        io::stdout().flush()
     }
 
     pub fn print_value(&self, value: &str) {

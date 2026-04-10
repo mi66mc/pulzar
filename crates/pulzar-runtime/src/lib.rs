@@ -3,9 +3,13 @@ use std::{
     collections::{BTreeMap, HashMap},
     fmt, fs,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     rc::Rc,
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use pulzar_builtins::{Builtin, lookup as lookup_builtin};
@@ -24,13 +28,24 @@ pub struct RuntimeResult {
 pub struct ShellContext {
     pub cwd: PathBuf,
     pub env: HashMap<String, String>,
+    pub interactive: bool,
 }
+
+#[derive(Debug)]
+pub struct Session {
+    shell: ShellContext,
+    env: EnvRef,
+}
+
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+static INTERRUPT_HANDLER: OnceLock<()> = OnceLock::new();
 
 impl Default for ShellContext {
     fn default() -> Self {
         Self {
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             env: std::env::vars().collect(),
+            interactive: false,
         }
     }
 }
@@ -76,6 +91,32 @@ enum Flow {
 
 pub fn run_file(file: &File, shell: &mut ShellContext) -> RuntimeResult {
     let env = Environment::new(None);
+    run_file_with_env(file, shell, env)
+}
+
+pub fn install_interrupt_handler() -> Result<(), String> {
+    if INTERRUPT_HANDLER.get().is_some() {
+        return Ok(());
+    }
+
+    ctrlc::set_handler(|| {
+        INTERRUPTED.store(true, Ordering::SeqCst);
+    })
+    .map_err(|err| err.to_string())?;
+
+    let _ = INTERRUPT_HANDLER.set(());
+    Ok(())
+}
+
+pub fn take_interrupt() -> bool {
+    INTERRUPTED.swap(false, Ordering::SeqCst)
+}
+
+pub fn run_file_in_session(file: &File, session: &mut Session) -> RuntimeResult {
+    run_file_with_env(file, &mut session.shell, session.env.clone())
+}
+
+fn run_file_with_env(file: &File, shell: &mut ShellContext, env: EnvRef) -> RuntimeResult {
     let mut runtime = Runtime {
         shell,
         diagnostics: Vec::new(),
@@ -92,6 +133,27 @@ pub fn run_file(file: &File, shell: &mut ShellContext) -> RuntimeResult {
     RuntimeResult {
         value,
         diagnostics: runtime.diagnostics,
+    }
+}
+
+impl Session {
+    pub fn new(shell: ShellContext) -> Self {
+        Self {
+            shell,
+            env: Environment::new(None),
+        }
+    }
+
+    pub fn cwd(&self) -> &Path {
+        &self.shell.cwd
+    }
+
+    pub fn shell(&self) -> &ShellContext {
+        &self.shell
+    }
+
+    pub fn shell_mut(&mut self) -> &mut ShellContext {
+        &mut self.shell
     }
 }
 
@@ -511,6 +573,30 @@ impl<'a> Runtime<'a> {
         command.env_clear();
         command.envs(self.shell.env.clone());
         command.args(args.iter().map(stringify_value));
+
+        if self.shell.interactive && stdin_value.is_none() {
+            INTERRUPTED.store(false, Ordering::SeqCst);
+            command.stdin(Stdio::inherit());
+            command.stdout(Stdio::inherit());
+            command.stderr(Stdio::inherit());
+            let status = command.status().map_err(|err| {
+                runtime_error(span, format!("failed to run `{command_name}`: {err}"))
+            })?;
+
+            if take_interrupt() {
+                return Ok(Value::Null);
+            }
+
+            if !status.success() {
+                return Err(runtime_error(
+                    span,
+                    format!("command `{command_name}` exited with status {}", status),
+                ));
+            }
+
+            return Ok(Value::Null);
+        }
+
         command.stdout(Stdio::piped());
         command.stderr(Stdio::inherit());
 
@@ -769,7 +855,7 @@ fn runtime_error(span: Span, message: impl Into<String>) -> Diagnostic {
 
 #[cfg(test)]
 mod tests {
-    use super::{ShellContext, Value, run_file};
+    use super::{Session, ShellContext, Value, run_file, run_file_in_session};
     use pulzar_parser::parse_file;
     use pulzar_sema::analyze_file;
     use pulzar_syntax::SourceId;
@@ -832,5 +918,45 @@ mod tests {
     fn reports_unknown_command() {
         let (value, diags) = run("command_that_should_not_exist_hopefully");
         assert!(value.is_none() || !diags.is_empty());
+    }
+
+    #[test]
+    fn session_preserves_bindings_between_runs() {
+        let mut session = Session::new(ShellContext::default());
+        session.shell_mut().cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root should exist");
+
+        let first = parse_file("let x = 1", SourceId(0));
+        assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+        let first_sema = analyze_file(&first.file);
+        assert!(
+            first_sema.diagnostics.is_empty(),
+            "{:?}",
+            first_sema.diagnostics
+        );
+        let first_runtime = run_file_in_session(&first.file, &mut session);
+        assert!(
+            first_runtime.diagnostics.is_empty(),
+            "{:?}",
+            first_runtime.diagnostics
+        );
+
+        let second = parse_file("$x", SourceId(0));
+        assert!(second.diagnostics.is_empty(), "{:?}", second.diagnostics);
+        let second_sema = analyze_file(&second.file);
+        assert!(
+            second_sema.diagnostics.is_empty(),
+            "{:?}",
+            second_sema.diagnostics
+        );
+        let second_runtime = run_file_in_session(&second.file, &mut session);
+        assert!(
+            second_runtime.diagnostics.is_empty(),
+            "{:?}",
+            second_runtime.diagnostics
+        );
+        assert!(matches!(second_runtime.value, Some(Value::Int(1))));
     }
 }
