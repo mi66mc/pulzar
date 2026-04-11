@@ -96,6 +96,7 @@ impl Analyzer {
         match &expr.kind {
             ExprKind::Bareword(_) => {}
             ExprKind::Variable(_) => {}
+            ExprKind::EnvVar(_) => {}
             ExprKind::Integer(_) => {}
             ExprKind::Float(_) => {}
             ExprKind::String(_) => {}
@@ -155,6 +156,7 @@ impl Analyzer {
                     ));
                 }
             }
+            ExprKind::EnvVar(_) => {}
             _ => {
                 // Parser already diagnoses invalid shapes; sema only enforces binding existence.
             }
@@ -282,5 +284,11 @@ mod tests {
     fn supports_recursive_function_name_binding() {
         let diags = diagnostics("fn f(x) => f($x)");
         assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn allows_env_assignment_without_local_binding() {
+        let diags = diagnostics("$$PATH = 'abc'");
+        assert!(!diags.contains(&DiagnosticKind::AssignmentToUndeclaredName));
     }
 }

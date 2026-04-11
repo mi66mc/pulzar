@@ -236,6 +236,7 @@ dependencies = [
 name = "pulzar-output"
 version = "0.1.0"
 dependencies = [
+ "pulzar-runtime",
  "pulzar-syntax",
 ]
 

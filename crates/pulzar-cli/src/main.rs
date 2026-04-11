@@ -272,7 +272,7 @@ fn execute_program(
         }
         if let Some(value) = runtime.value {
             if !matches!(value, pulzar_runtime::Value::Null) {
-                reporter.print_value(&value.to_string());
+                reporter.print_runtime_value(&value);
             }
         }
     } else if print_success_status {

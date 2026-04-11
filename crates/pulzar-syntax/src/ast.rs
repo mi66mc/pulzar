@@ -74,6 +74,7 @@ pub struct Expr {
 pub enum ExprKind {
     Bareword(String),
     Variable(String),
+    EnvVar(String),
     Integer(i64),
     Float(f64),
     String(String),

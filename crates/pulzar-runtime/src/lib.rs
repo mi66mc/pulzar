@@ -12,7 +12,7 @@ use std::{
     },
 };
 
-use pulzar_builtins::{Builtin, lookup as lookup_builtin};
+use pulzar_builtins::{BuiltinId, BuiltinSpec, format_usage, render_help, resolve_segments};
 use pulzar_syntax::{
     BinaryOp, Block, Diagnostic, DiagnosticKind, Expr, ExprKind, File, FnBody, LambdaBody, Span,
     Stmt, StmtKind, UnaryOp,
@@ -207,6 +207,10 @@ impl<'a> Runtime<'a> {
                             ))
                         }
                     }
+                    ExprKind::EnvVar(name) => {
+                        self.shell.env.insert(name.clone(), stringify_value(&value));
+                        Ok(Flow::Value(value))
+                    }
                     _ => Err(runtime_error(target.span, "invalid assignment target")),
                 }
             }
@@ -231,18 +235,13 @@ impl<'a> Runtime<'a> {
             }
             StmtKind::Expr(expr) => {
                 if matches!(expr.kind, ExprKind::Bareword(_)) {
-                    let value = match self.resolve_callable(expr, env.clone())? {
-                        Callable::Function(function) => {
-                            self.call_function(function, Vec::new(), stmt.span)?
-                        }
-                        Callable::Builtin(builtin) => {
-                            self.call_builtin(builtin, Vec::new(), env, stmt.span)?
-                        }
-                        Callable::External(name) => {
-                            self.run_external_command(&name, Vec::new(), None, stmt.span)?
-                        }
-                    };
-                    Ok(Flow::Value(value))
+                    Ok(Flow::Value(self.eval_command_expr(
+                        expr,
+                        &[],
+                        None,
+                        env,
+                        stmt.span,
+                    )?))
                 } else {
                     Ok(Flow::Value(self.eval_expr(expr, env)?))
                 }
@@ -254,6 +253,13 @@ impl<'a> Runtime<'a> {
         match &expr.kind {
             ExprKind::Bareword(text) => Ok(Value::String(text.clone())),
             ExprKind::Variable(name) => self.resolve_variable_value(name, expr.span, env),
+            ExprKind::EnvVar(name) => Ok(self
+                .shell
+                .env
+                .get(name)
+                .cloned()
+                .map(Value::String)
+                .unwrap_or(Value::Null)),
             ExprKind::Integer(value) => Ok(Value::Int(*value)),
             ExprKind::Float(value) => Ok(Value::Float(*value)),
             ExprKind::String(value) => Ok(Value::String(value.clone())),
@@ -323,30 +329,20 @@ impl<'a> Runtime<'a> {
         env: EnvRef,
         span: Span,
     ) -> Result<Value, Diagnostic> {
+        if matches!(callee.kind, ExprKind::Bareword(_)) {
+            return self.eval_command_expr(callee, args, pipeline_input, env, span);
+        }
+
         let mut values = Vec::new();
         if let Some(input) = pipeline_input {
             values.push(input);
         }
-        match self.resolve_callable(callee, env.clone())? {
-            Callable::Function(function) => {
-                for arg in args {
-                    values.push(self.eval_expr(arg, env.clone())?);
-                }
-                self.call_function(function, values, span)
-            }
-            Callable::Builtin(builtin) => {
-                for arg in args {
-                    values.push(self.eval_expr(arg, env.clone())?);
-                }
-                self.call_builtin(builtin, values, env, span)
-            }
-            Callable::External(name) => {
-                for arg in args {
-                    values.push(self.eval_expr(arg, env.clone())?);
-                }
-                self.run_external_command(&name, values, None, span)
-            }
+        for arg in args {
+            values.push(self.eval_expr(arg, env.clone())?);
         }
+
+        let function = self.resolve_function_callable(callee, env)?;
+        self.call_function(function, values, span)
     }
 
     fn eval_pipeline_stage(
@@ -357,38 +353,12 @@ impl<'a> Runtime<'a> {
         span: Span,
     ) -> Result<Value, Diagnostic> {
         match &stage.kind {
-            ExprKind::Call { callee, args } => match self.resolve_callable(callee, env.clone())? {
-                Callable::Function(function) => {
-                    let mut values = vec![input];
-                    for arg in args {
-                        values.push(self.eval_expr(arg, env.clone())?);
-                    }
-                    self.call_function(function, values, span)
-                }
-                Callable::Builtin(builtin) => {
-                    let mut values = vec![input];
-                    for arg in args {
-                        values.push(self.eval_expr(arg, env.clone())?);
-                    }
-                    self.call_builtin(builtin, values, env, span)
-                }
-                Callable::External(name) => {
-                    let mut values = Vec::new();
-                    for arg in args {
-                        values.push(self.eval_expr(arg, env.clone())?);
-                    }
-                    self.run_external_command(&name, values, Some(input), span)
-                }
-            },
-            ExprKind::Bareword(_) | ExprKind::Variable(_) => match self
-                .resolve_callable(stage, env.clone())?
-            {
-                Callable::Function(function) => self.call_function(function, vec![input], span),
-                Callable::Builtin(builtin) => self.call_builtin(builtin, vec![input], env, span),
-                Callable::External(name) => {
-                    self.run_external_command(&name, Vec::new(), Some(input), span)
-                }
-            },
+            ExprKind::Call { callee, args } => self.eval_call(callee, args, Some(input), env, span),
+            ExprKind::Bareword(_) => self.eval_command_expr(stage, &[], Some(input), env, span),
+            ExprKind::Variable(_) => {
+                let function = self.resolve_function_callable(stage, env)?;
+                self.call_function(function, vec![input], span)
+            }
             _ => {
                 let callee = self.eval_expr(stage, env)?;
                 match callee {
@@ -419,19 +389,16 @@ impl<'a> Runtime<'a> {
         ))
     }
 
-    fn resolve_callable(&mut self, callee: &Expr, env: EnvRef) -> Result<Callable, Diagnostic> {
+    fn resolve_function_callable(
+        &mut self,
+        callee: &Expr,
+        env: EnvRef,
+    ) -> Result<Rc<Function>, Diagnostic> {
         match &callee.kind {
-            ExprKind::Bareword(name) => {
-                if let Some(builtin) = lookup_builtin(name) {
-                    Ok(Callable::Builtin(builtin))
-                } else {
-                    Ok(Callable::External(name.clone()))
-                }
-            }
             ExprKind::Variable(name) => {
                 if let Some(cell) = env.resolve(name) {
                     match cell.borrow().clone() {
-                        Value::Function(function) => Ok(Callable::Function(function)),
+                        Value::Function(function) => Ok(function),
                         _ => Err(runtime_error(
                             callee.span,
                             format!("`{name}` is not callable"),
@@ -445,7 +412,7 @@ impl<'a> Runtime<'a> {
                 }
             }
             _ => match self.eval_expr(callee, env)? {
-                Value::Function(function) => Ok(Callable::Function(function)),
+                Value::Function(function) => Ok(function),
                 _ => Err(runtime_error(callee.span, "expression is not callable")),
             },
         }
@@ -481,15 +448,168 @@ impl<'a> Runtime<'a> {
         }
     }
 
-    fn call_builtin(
+    fn eval_command_expr(
         &mut self,
-        builtin: Builtin,
-        args: Vec<Value>,
-        _env: EnvRef,
+        callee: &Expr,
+        args: &[Expr],
+        pipeline_input: Option<Value>,
+        env: EnvRef,
         span: Span,
     ) -> Result<Value, Diagnostic> {
-        match builtin {
-            Builtin::Lines => {
+        let ExprKind::Bareword(command_name) = &callee.kind else {
+            return Err(runtime_error(callee.span, "expected command name"));
+        };
+
+        if let Some((spec, consumed)) = self.resolve_builtin_command(command_name, args) {
+            let start = consumed.saturating_sub(1);
+            let mut values = Vec::new();
+            if let Some(input) = pipeline_input {
+                values.push(input);
+            }
+            for arg in &args[start..] {
+                values.push(self.eval_expr(arg, env.clone())?);
+            }
+            return self.execute_builtin(spec, values, span);
+        }
+
+        let mut values = Vec::new();
+        for arg in args {
+            values.push(self.eval_expr(arg, env.clone())?);
+        }
+        self.run_external_command(command_name, values, pipeline_input, span)
+    }
+
+    fn resolve_builtin_command(
+        &self,
+        command_name: &str,
+        args: &[Expr],
+    ) -> Option<(&'static BuiltinSpec, usize)> {
+        let mut segments = vec![command_name];
+        for arg in args {
+            match &arg.kind {
+                ExprKind::Bareword(segment) => segments.push(segment.as_str()),
+                _ => break,
+            }
+        }
+
+        resolve_segments(&segments).map(|matched| (matched.spec, matched.consumed))
+    }
+
+    fn execute_builtin(
+        &mut self,
+        spec: &'static BuiltinSpec,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        self.ensure_builtin_arity(spec, args.len(), span)?;
+
+        match spec.id {
+            BuiltinId::Help => {
+                if args.is_empty() {
+                    return Ok(Value::String(render_help(None)));
+                }
+
+                let targets = args.iter().map(stringify_value).collect::<Vec<_>>();
+                let target_refs = targets.iter().map(String::as_str).collect::<Vec<_>>();
+                let matched = resolve_segments(&target_refs).ok_or_else(|| {
+                    runtime_error(span, format!("unknown builtin `{}`", targets.join(" ")))
+                })?;
+                Ok(Value::String(render_help(Some(matched.spec))))
+            }
+            BuiltinId::FsRead => {
+                let [path] = expect_arity(args, span)?;
+                let path = stringify_value(&path);
+                let path = self.shell.cwd.join(path);
+                let contents = fs::read_to_string(&path).map_err(|err| {
+                    runtime_error(span, format!("failed to read `{}`: {err}", path.display()))
+                })?;
+                Ok(Value::String(contents))
+            }
+            BuiltinId::FsPwd => Ok(Value::String(self.shell.cwd.display().to_string())),
+            BuiltinId::FsLs => {
+                let path = match args.as_slice() {
+                    [] => self.shell.cwd.clone(),
+                    [path] => self.shell.cwd.join(stringify_value(path)),
+                    _ => unreachable!("arity checked above"),
+                };
+
+                let entries = fs::read_dir(&path).map_err(|err| {
+                    runtime_error(span, format!("failed to list `{}`: {err}", path.display()))
+                })?;
+
+                let mut names = entries
+                    .map(|entry| {
+                        entry
+                            .map(|entry| {
+                                Value::String(entry.file_name().to_string_lossy().to_string())
+                            })
+                            .map_err(|err| {
+                                runtime_error(span, format!("failed to read dir entry: {err}"))
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                names.sort_by(|left, right| stringify_value(left).cmp(&stringify_value(right)));
+                Ok(Value::List(names))
+            }
+            BuiltinId::Cd => {
+                let target = match args.as_slice() {
+                    [] => self
+                        .shell
+                        .env
+                        .get("HOME")
+                        .or_else(|| self.shell.env.get("USERPROFILE"))
+                        .cloned()
+                        .ok_or_else(|| {
+                            runtime_error(span, "`cd` needs a path when HOME/USERPROFILE is unset")
+                        })?,
+                    [path] => stringify_value(path),
+                    _ => unreachable!("arity checked above"),
+                };
+                let target = self.shell.cwd.join(target);
+                let target = target.canonicalize().map_err(|err| {
+                    runtime_error(
+                        span,
+                        format!(
+                            "failed to change directory to `{}`: {err}",
+                            target.display()
+                        ),
+                    )
+                })?;
+                self.shell.cwd = target.clone();
+                Ok(Value::String(target.display().to_string()))
+            }
+            BuiltinId::EnvGet => {
+                let [name] = expect_arity(args, span)?;
+                let name = self.expect_env_name(name, span)?;
+                Ok(self
+                    .shell
+                    .env
+                    .get(&name)
+                    .cloned()
+                    .map(Value::String)
+                    .unwrap_or(Value::Null))
+            }
+            BuiltinId::EnvSet => {
+                let [name, value] = expect_arity(args, span)?;
+                let name = self.expect_env_name(name, span)?;
+                let value = stringify_value(&value);
+                self.shell.env.insert(name, value.clone());
+                Ok(Value::String(value))
+            }
+            BuiltinId::EnvUnset => {
+                let [name] = expect_arity(args, span)?;
+                let name = self.expect_env_name(name, span)?;
+                self.shell.env.remove(&name);
+                Ok(Value::Null)
+            }
+            BuiltinId::EnvList => {
+                let mut out = BTreeMap::new();
+                for (key, value) in &self.shell.env {
+                    out.insert(key.clone(), Value::String(value.clone()));
+                }
+                Ok(Value::Object(out))
+            }
+            BuiltinId::Lines => {
                 let [value] = expect_arity(args, span)?;
                 match value {
                     Value::String(text) => Ok(Value::List(
@@ -500,20 +620,7 @@ impl<'a> Runtime<'a> {
                     _ => Err(runtime_error(span, "`lines` expects a string")),
                 }
             }
-            Builtin::Pwd => {
-                expect_arity::<0>(args, span)?;
-                Ok(Value::String(self.shell.cwd.display().to_string()))
-            }
-            Builtin::Cat => {
-                let [path] = expect_arity(args, span)?;
-                let path = stringify_value(&path);
-                let path = self.shell.cwd.join(path);
-                let contents = fs::read_to_string(&path).map_err(|err| {
-                    runtime_error(span, format!("failed to read `{}`: {err}", path.display()))
-                })?;
-                Ok(Value::String(contents))
-            }
-            Builtin::Map => {
+            BuiltinId::Map => {
                 let [list, callback] = expect_arity(args, span)?;
                 let Value::List(items) = list else {
                     return Err(runtime_error(
@@ -534,7 +641,7 @@ impl<'a> Runtime<'a> {
                 }
                 Ok(Value::List(out))
             }
-            Builtin::Filter => {
+            BuiltinId::Filter => {
                 let [list, callback] = expect_arity(args, span)?;
                 let Value::List(items) = list else {
                     return Err(runtime_error(
@@ -558,6 +665,51 @@ impl<'a> Runtime<'a> {
                 }
                 Ok(Value::List(out))
             }
+        }
+    }
+
+    fn ensure_builtin_arity(
+        &self,
+        spec: &BuiltinSpec,
+        actual: usize,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        let variadic = spec.args.last().map(|arg| arg.variadic).unwrap_or(false);
+        let min = spec.args.iter().filter(|arg| !arg.optional).count();
+        let max = if variadic {
+            usize::MAX
+        } else {
+            spec.args.len()
+        };
+        if actual < min || actual > max {
+            let max_text = if variadic {
+                "many".to_string()
+            } else {
+                max.to_string()
+            };
+            return Err(runtime_error(
+                span,
+                format!(
+                    "{} expects between {} and {} argument(s), got {}",
+                    format_usage(spec),
+                    min,
+                    max_text,
+                    actual
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn expect_env_name(&self, value: Value, span: Span) -> Result<String, Diagnostic> {
+        let name = stringify_value(&value);
+        if is_valid_env_name(&name) {
+            Ok(name)
+        } else {
+            Err(runtime_error(
+                span,
+                format!("invalid environment variable name `{name}`"),
+            ))
         }
     }
 
@@ -695,12 +847,6 @@ impl<'a> Runtime<'a> {
     }
 }
 
-enum Callable {
-    Function(Rc<Function>),
-    Builtin(Builtin),
-    External(String),
-}
-
 impl Environment {
     fn new(parent: Option<EnvRef>) -> EnvRef {
         Rc::new(Self {
@@ -770,6 +916,16 @@ fn stringify_value(value: &Value) -> String {
         Value::String(text) => text.clone(),
         other => other.to_string(),
     }
+}
+
+fn is_valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(ch) if ch.is_ascii_alphabetic() || ch == '_' => {}
+        _ => return false,
+    }
+
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn is_truthy(value: &Value) -> bool {
@@ -921,6 +1077,24 @@ mod tests {
     }
 
     #[test]
+    fn reads_and_writes_env_vars() {
+        let (value, diags) = run("$$PULZAR_TEST = '123'\n$$PULZAR_TEST");
+        assert!(diags.is_empty(), "{:?}", diags);
+        assert!(matches!(value, Some(Value::String(value)) if value == "123"));
+    }
+
+    #[test]
+    fn help_and_subcommand_aliases_work() {
+        let (value, diags) = run("help fs read");
+        assert!(diags.is_empty(), "{:?}", diags);
+        assert!(matches!(value, Some(Value::String(value)) if value.contains("fs read")));
+
+        let (value, diags) = run("fs pwd");
+        assert!(diags.is_empty(), "{:?}", diags);
+        assert!(matches!(value, Some(Value::String(value)) if !value.is_empty()));
+    }
+
+    #[test]
     fn session_preserves_bindings_between_runs() {
         let mut session = Session::new(ShellContext::default());
         session.shell_mut().cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -958,5 +1132,61 @@ mod tests {
             second_runtime.diagnostics
         );
         assert!(matches!(second_runtime.value, Some(Value::Int(1))));
+    }
+
+    #[test]
+    fn session_stateful_builtins_mutate_shell() {
+        let mut session = Session::new(ShellContext::default());
+        session.shell_mut().cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root should exist");
+
+        let env_set = parse_file("env set PULZAR_RT abc", SourceId(0));
+        assert!(env_set.diagnostics.is_empty(), "{:?}", env_set.diagnostics);
+        let env_set_sema = analyze_file(&env_set.file);
+        assert!(
+            env_set_sema.diagnostics.is_empty(),
+            "{:?}",
+            env_set_sema.diagnostics
+        );
+        let env_set_result = run_file_in_session(&env_set.file, &mut session);
+        assert!(
+            env_set_result.diagnostics.is_empty(),
+            "{:?}",
+            env_set_result.diagnostics
+        );
+
+        let env_read = parse_file("$$PULZAR_RT", SourceId(0));
+        assert!(
+            env_read.diagnostics.is_empty(),
+            "{:?}",
+            env_read.diagnostics
+        );
+        let env_read_sema = analyze_file(&env_read.file);
+        assert!(
+            env_read_sema.diagnostics.is_empty(),
+            "{:?}",
+            env_read_sema.diagnostics
+        );
+        let env_read_result = run_file_in_session(&env_read.file, &mut session);
+        assert!(
+            env_read_result.diagnostics.is_empty(),
+            "{:?}",
+            env_read_result.diagnostics
+        );
+        assert!(matches!(env_read_result.value, Some(Value::String(value)) if value == "abc"));
+
+        let cd = parse_file("cd crates", SourceId(0));
+        assert!(cd.diagnostics.is_empty(), "{:?}", cd.diagnostics);
+        let cd_sema = analyze_file(&cd.file);
+        assert!(cd_sema.diagnostics.is_empty(), "{:?}", cd_sema.diagnostics);
+        let cd_result = run_file_in_session(&cd.file, &mut session);
+        assert!(
+            cd_result.diagnostics.is_empty(),
+            "{:?}",
+            cd_result.diagnostics
+        );
+        assert!(session.cwd().ends_with("crates"));
     }
 }

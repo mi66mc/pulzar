@@ -176,11 +176,11 @@ impl<'a> Parser<'a> {
 
         if self.match_kind(TokenKind::Assign) {
             let rhs = self.parse_expression();
-            if !matches!(expr.kind, ExprKind::Variable(_)) {
+            if !matches!(expr.kind, ExprKind::Variable(_) | ExprKind::EnvVar(_)) {
                 self.diagnostics.push(Diagnostic::new(
                     DiagnosticKind::InvalidAssignmentTarget,
                     expr.span,
-                    "invalid assignment target; use `$name = ...`",
+                    "invalid assignment target; use `$name = ...` or `$$NAME = ...`",
                 ));
             }
 
@@ -317,6 +317,15 @@ impl<'a> Parser<'a> {
 
         loop {
             if self.match_kind(TokenKind::Dot) {
+                if matches!(expr.kind, ExprKind::EnvVar(_)) {
+                    self.diagnostics.push(Diagnostic::new(
+                        DiagnosticKind::UnexpectedToken,
+                        self.current_span(),
+                        "environment variables do not support member access",
+                    ));
+                    break;
+                }
+
                 if self.at(TokenKind::Identifier) {
                     let field = self.current_text().to_string();
                     let field_span = self.current_span();
@@ -375,7 +384,7 @@ impl<'a> Parser<'a> {
         let start = self.current_span();
         match self.current_kind() {
             TokenKind::Identifier => self.parse_bareword(),
-            TokenKind::Dollar => self.parse_variable(),
+            TokenKind::Dollar => self.parse_dollar_expr(),
             TokenKind::Integer => {
                 let value = self.parse_integer_literal(start);
                 self.bump();
@@ -447,11 +456,32 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_dollar_expr(&mut self) -> Expr {
+        if self.peek_kind(1) == TokenKind::Dollar {
+            return self.parse_env_var();
+        }
+
+        self.parse_variable()
+    }
+
     fn parse_variable(&mut self) -> Expr {
         let start = self.expect(TokenKind::Dollar, "expected `$`");
         let (name, end) = self.expect_identifier("expected identifier after `$`");
         Expr {
             kind: ExprKind::Variable(name),
+            span: start.cover(end),
+        }
+    }
+
+    fn parse_env_var(&mut self) -> Expr {
+        let start = self.expect(TokenKind::Dollar, "expected `$`");
+        let _ = self.expect(
+            TokenKind::Dollar,
+            "expected second `$` for environment variable",
+        );
+        let (name, end) = self.expect_identifier("expected environment variable name after `$$`");
+        Expr {
+            kind: ExprKind::EnvVar(name),
             span: start.cover(end),
         }
     }
@@ -1087,5 +1117,15 @@ mod tests {
 
         let list = parse_expr("[\n1,\n2\n]", SourceId(0));
         assert!(list.diagnostics.is_empty(), "{:?}", list.diagnostics);
+    }
+
+    #[test]
+    fn parses_env_vars() {
+        let parsed = parse_expr("$$PATH", SourceId(0));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        assert!(matches!(
+            parsed.expr.expect("expr").kind,
+            ExprKind::EnvVar(ref value) if value == "PATH"
+        ));
     }
 }
