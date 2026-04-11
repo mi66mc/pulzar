@@ -272,6 +272,19 @@ name = "pulzar-syntax"
 version = "0.1.0"
 
 [[package]]
+name = "pulzar-workspace"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "pulzar-lexer",
+ "pulzar-output",
+ "pulzar-parser",
+ "pulzar-runtime",
+ "pulzar-sema",
+ "pulzar-syntax",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"

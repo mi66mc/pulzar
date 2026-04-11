@@ -1,3 +1,15 @@
+[package]
+name = "pulzar-workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+default-run = "pulzar"
+
+[[bin]]
+name = "pulzar"
+path = "crates/pulzar-cli/src/main.rs"
+
 [workspace]
 members = [
     "crates/pulzar-cli",
@@ -14,7 +26,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "AGPL-3.0-only"
 
 [workspace.dependencies]
 pulzar-syntax = { path = "crates/pulzar-syntax" }
@@ -25,3 +37,12 @@ pulzar-output = { path = "crates/pulzar-output" }
 pulzar-builtins = { path = "crates/pulzar-builtins" }
 pulzar-runtime = { path = "crates/pulzar-runtime" }
 ctrlc = "3.4.5"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+pulzar-lexer.workspace = true
+pulzar-output.workspace = true
+pulzar-parser.workspace = true
+pulzar-runtime.workspace = true
+pulzar-sema.workspace = true
+pulzar-syntax.workspace = true
